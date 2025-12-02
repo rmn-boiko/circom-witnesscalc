@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, RwLock};
 use crate::field::{FieldOperations, FieldOps};
-use crate::vm2::{Component, InputInfo, RuntimeError, Template, Type, TypeFieldKind};
+use crate::vm2::{Component, InputInfo, Template, Type, TypeFieldKind};
 
 /// Initialize signals array with input values from JSON
 pub fn init_signals<T: FieldOps, F>(
@@ -55,9 +55,16 @@ where
                     signal_idx
                 };
                 if let Err(e) = component.set_signal(target_idx, *value) {
-                    // Ignore double-set when the same signal is reached via multiple aliases.
-                    if e.downcast_ref::<RuntimeError>().is_none() {
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
                         return Err(e);
+                    }
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Ignore double-set when the same signal is reached via multiple aliases.
+                        if e.downcast_ref::<crate::vm2::RuntimeError>().is_none() {
+                            return Err(e);
+                        }
                     }
                 }
                 continue;

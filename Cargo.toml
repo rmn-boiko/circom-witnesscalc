@@ -12,6 +12,8 @@ default = []
 print_opcode = []
 debug_vm2 = []
 parallel_components = []
+# Enables CVM-compatible (multi-assigns, tolerant indices, etc.)
+cvm_latest_compatible = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
