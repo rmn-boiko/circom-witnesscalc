@@ -380,6 +380,10 @@ impl <T: FieldOps> Signals<T> {
     pub fn set(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error + Sync + Send>> {
         match self.signals.get_mut(idx) {
             Some(slot) => {
+                // ToDo#Vm2-stabilization-experiments: currently circom allows overwriting signals
+                // if self.present[idx] {
+                //     return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                // }
                 self.present.set(idx, true);
                 *slot = val;
                 Ok(())
@@ -692,6 +696,10 @@ impl<T: FieldOps> VM<T> {
     }
 
     fn pop_usize(&mut self) -> Result<usize, RuntimeError> {
+        // ToDo#Vm2-stabilization-experiments: cvm expect negative values to be a zero
+        // self.pop_i64()?
+        //     .try_into()
+        //     .map_err(|_| RuntimeError::I32ToUsizeConversion)
         let v = self.pop_i64()?;
         if v < 0 {
             Ok(0)
@@ -1895,6 +1903,7 @@ where
                         {
                             let mut c = c.write().unwrap();
                             c.set_signal(sig_idx, value)?;
+                            // ToDo#Vm2-stabilization-experiments: Cvm absorbs extra inputs
                             if c.number_of_inputs > 0 {
                                 c.number_of_inputs -= 1;
                             }
@@ -2007,6 +2016,7 @@ where
             }
             OpCode::Error => {
                 let error_code = vm.pop_i64()?;
+                // ToDo#Vm2-stabilization-experiments
                 // Circom uses error 0 for assertion failures; treat it as a
                 // soft failure and keep execution going. Non-zero still aborts.
                 if error_code != 0 {
@@ -2695,6 +2705,7 @@ where
                 let num_inputs = template.inputs.len();
                 let total_io_signals = num_outputs + num_inputs;
                 
+                // ToDo#Vm2-stabilization-experiments
                 // Circom runtime often assumes missing signals map to position 0.
                 // If asked for an out-of-range signal, return position 0.
                 if signal_id >= total_io_signals {
@@ -2726,6 +2737,7 @@ where
                 let num_inputs = template.inputs.len();
                 let total_io_signals = num_outputs + num_inputs;
                 
+                // ToDo#Vm2-stabilization-experiments
                 // Return size 0 for out-of-range signal ids to match Circom defaults.
                 if signal_id >= total_io_signals {
                     vm.push_i64(0);
@@ -2753,6 +2765,7 @@ where
                 let num_inputs = template.inputs.len();
                 let total_io_signals = num_outputs + num_inputs;
 
+                // ToDo#Vm2-stabilization-experiments
                 // Return ff (-1) when signal id is out of range.
                 if signal_id >= total_io_signals {
                     vm.push_i64(-1);
@@ -2794,6 +2807,7 @@ where
                 let num_inputs = template.inputs.len();
                 let total_io_signals = num_outputs + num_inputs;
                 
+                // ToDo#Vm2-stabilization-experiments
                 // Return dims=0 if signal id is out of range.
                 if signal_id >= total_io_signals {
                     vm.push_i64(0);
@@ -2812,6 +2826,7 @@ where
                 };
                 
                 if dimension_index >= dims.len() {
+                    // ToDo#Vm2-stabilization-experiments
                     // Circom treats missing higher dimensions as length 1.
                     vm.push_i64(1);
                 } else {
@@ -2829,6 +2844,7 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
+                    // ToDo#Vm2-stabilization-experiments
                     vm.push_i64(0);
                     continue;
                 }
@@ -2855,6 +2871,7 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
+                    // ToDo#Vm2-stabilization-experiments
                     vm.push_i64(0);
                     continue;
                 }
@@ -2881,6 +2898,7 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
+                    // ToDo#Vm2-stabilization-experiments
                     vm.push_i64(-1);
                     continue;
                 }
@@ -2922,6 +2940,7 @@ where
                 let field = &bus_type.fields[field_id];
 
                 let dims = &field.dims;
+                // ToDo#Vm2-stabilization-experiments
                 // Circom uses length 1 for dimensions beyond the declared rank.
                 let dim_length = if dimension_idx >= dims.len() {
                     1
