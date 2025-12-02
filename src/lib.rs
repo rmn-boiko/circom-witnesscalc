@@ -486,6 +486,14 @@ fn witness_signals<T: FieldOps>(
     signals.push(Some(T::one()));
     component_tree.write_all_signals(&mut signals);
 
+    // Circom defaults unset signals to zero. Fill any missing slots so witness
+    // extraction does not fail on outputs that were never explicitly assigned.
+    for slot in signals.iter_mut() {
+        if slot.is_none() {
+            *slot = Some(T::zero());
+        }
+    }
+
     let mut witness: Vec<T> = Vec::with_capacity(witness_signals.len());
     for idx in witness_signals {
         witness.push(
