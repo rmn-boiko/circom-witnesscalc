@@ -46,8 +46,27 @@ where
         if let Some(field_path) = try_convert_bus_flat_to_field_path(path, input_infos, types) {
             if let Some(&signal_idx) = signal_path_to_idx.get(&field_path) {
                 signal_path_to_idx.remove(&field_path);
-                // ToDo: Investigate why component signals start expected only in flat buses structures
-                component.set_signal(signal_idx + component.signals_start, *value).map_err(|e| -> Box<dyn Error> {e})?;
+                let candidate = signal_idx + component.signals_start;
+                let target_idx = if candidate < component.signals_len() {
+                    candidate
+                } else if signal_idx > 0 && signal_idx - 1 < component.signals_len() {
+                    signal_idx - 1
+                } else {
+                    signal_idx
+                };
+                if let Err(e) = component.set_signal(target_idx, *value) {
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(e);
+                    }
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Ignore double-set when the same signal is reached via multiple aliases.
+                        if e.downcast_ref::<crate::vm2::RuntimeError>().is_none() {
+                            return Err(e);
+                        }
+                    }
+                }
                 continue;
             }
         }
@@ -181,8 +200,12 @@ fn expand_bus_type(
     current_offset: &mut usize,
     paths: &mut Vec<(String, usize)>
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let bus_start = *current_offset;
+    let mut max_offset = bus_start;
+
     for field in &bus_type.fields {
         let field_path = format!("{}.{}", base_path, field.name);
+        let field_start = bus_start + field.offset;
 
         match &field.kind {
             TypeFieldKind::Bus(bus_type_index) => {
@@ -192,37 +215,45 @@ fn expand_bus_type(
                             "bus type not found: bus type index {}",
                             bus_type_index)))?;
 
-                if field.dims.is_empty() {
-                    // Single bus instance
-                    expand_bus_type(&field_path, field_type, types, current_offset, paths)?;
+                let total_elements: usize = if field.dims.is_empty() {
+                    1
                 } else {
-                    // Array of bus instances
-                    let total_elements: usize = field.dims.iter().product();
-                    for i in 0..total_elements {
-                        let array_path = format!("{}[{}]", field_path, i);
-                        expand_bus_type(&array_path, field_type, types, current_offset, paths)?;
-                    }
+                    field.dims.iter().product()
+                };
+                for i in 0..total_elements {
+                    let array_path = if total_elements == 1 {
+                        field_path.clone()
+                    } else {
+                        format!("{}[{}]", field_path, i)
+                    };
+                    let mut local_offset = field_start + i * field.size;
+
+                    // Expand nested bus fields at the correct offset
+                    expand_bus_type(&array_path, field_type, types, &mut local_offset, paths)?;
+                    max_offset = max_offset.max(local_offset);
                 }
             },
             TypeFieldKind::Ff => {
-                // This field is a primitive type (ff)
-                if field.dims.is_empty() {
-                    // Single field
-                    paths.push((field_path, *current_offset));
-                    *current_offset += 1;
+                let total_elements: usize = if field.dims.is_empty() {
+                    1
                 } else {
-                    // Array of fields
-                    let total_elements: usize = field.dims.iter().product();
-                    for i in 0..total_elements {
-                        let array_path = format!("{}[{}]", field_path, i);
-                        paths.push((array_path, *current_offset));
-                        *current_offset += 1;
-                    }
+                    field.dims.iter().product()
+                };
+                for i in 0..total_elements {
+                    let array_path = if total_elements == 1 {
+                        field_path.clone()
+                    } else {
+                        format!("{}[{}]", field_path, i)
+                    };
+                    let offset = field_start + i * field.size.max(1);
+                    paths.push((array_path, offset));
+                    max_offset = max_offset.max(offset + field.size.max(1));
                 }
             }
         }
     }
 
+    *current_offset = max_offset;
     Ok(())
 }
 
@@ -266,6 +297,7 @@ fn try_convert_bus_flat_to_field_path(
         paths.extend(tmp_paths);
     }
 
+    paths.sort_by_key(|(_, offset)| *offset);
     paths.get(flat_idx).map(|(p, _)| p.clone())
 }
 

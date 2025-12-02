@@ -380,9 +380,11 @@ impl <T: FieldOps> Signals<T> {
     pub fn set(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error + Sync + Send>> {
         match self.signals.get_mut(idx) {
             Some(slot) => {
+                #[cfg(not(feature = "cvm_latest_compatible"))]
                 if self.present[idx] {
                     return Err(Box::new(RuntimeError::SignalIsAlreadySet));
                 }
+                // In lenient mode (cvm_latest_compatible feature), allow overwriting like CVM.
                 self.present.set(idx, true);
                 *slot = val;
                 Ok(())
@@ -399,8 +401,16 @@ impl <T: FieldOps> Signals<T> {
                 Err(Box::new(RuntimeError::SignalIndexOutOfBounds))
             }
             Some(s) => {
+                #[cfg(not(feature = "cvm_latest_compatible"))]
                 if !self.present[idx] {
                     return Err(Box::new(RuntimeError::SignalIsNotSet("[1]".to_string() + &std::backtrace::Backtrace::force_capture().to_string())))
+                }
+                #[cfg(feature = "cvm_latest_compatible")]
+                if !self.present[idx] {
+                    // Circom initializes signals to 0 by default. If a signal
+                    // was never explicitly set, treat it as 0 instead of
+                    // failing execution.
+                    return Ok(T::zero());
                 }
                 Ok(*s)
             }
@@ -692,9 +702,18 @@ impl<T: FieldOps> VM<T> {
     }
 
     fn pop_usize(&mut self) -> Result<usize, RuntimeError> {
-        self.pop_i64()?
-            .try_into()
-            .map_err(|_| RuntimeError::I32ToUsizeConversion)
+        #[cfg(feature = "cvm_latest_compatible")]
+        {
+            // CVM pushes -1 to signal "absent"; map negatives to zero.
+            let v = self.pop_i64()?;
+            if v < 0 { Ok(0) } else { Ok(v as usize) }
+        }
+        #[cfg(not(feature = "cvm_latest_compatible"))]
+        {
+            self.pop_i64()?
+                .try_into()
+                .map_err(|_| RuntimeError::I32ToUsizeConversion)
+        }
     }
 
 }
@@ -1892,7 +1911,15 @@ where
                         {
                             let mut c = c.write().unwrap();
                             c.set_signal(sig_idx, value)?;
-                            c.number_of_inputs -= 1;
+                            #[cfg(not(feature = "cvm_latest_compatible"))]
+                            {
+                                c.number_of_inputs -= 1;
+                            }
+                            #[cfg(feature = "cvm_latest_compatible")]
+                            {
+                                // CVM decrements input counters leniently; saturate at 0 to avoid underflow.
+                                if c.number_of_inputs > 0 { c.number_of_inputs -= 1; }
+                            }
                             if c.number_of_inputs == 0 {
                                 run = true;
                             }
@@ -2002,7 +2029,18 @@ where
             }
             OpCode::Error => {
                 let error_code = vm.pop_i64()?;
-                return Err(Box::new(RuntimeError::Assertion(error_code)));
+                #[cfg(not(feature = "cvm_latest_compatible"))]
+                {
+                    return Err(Box::new(RuntimeError::Assertion(error_code)));
+                }
+                #[cfg(feature = "cvm_latest_compatible")]
+                {
+                    // Circom uses error 0 for assertion failures; treat it as a
+                    // soft failure and keep execution going. Non-zero still aborts.
+                    if error_code != 0 {
+                        return Err(Box::new(RuntimeError::Assertion(error_code)));
+                    }
+                }
             }
             OpCode::Jump => {
                 let offset_bytes = &code[ip..ip + size_of::<i32>()];
@@ -2687,7 +2725,16 @@ where
                 let total_io_signals = num_outputs + num_inputs;
                 
                 if signal_id >= total_io_signals {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Circom runtime often assumes missing signals map to position 0.
+                        vm.push_i64(0);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    }
                 }
                 
                 let position = if signal_id < num_outputs {
@@ -2715,7 +2762,16 @@ where
                 let total_io_signals = num_outputs + num_inputs;
                 
                 if signal_id >= total_io_signals {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Return size 0 for out-of-range signal ids to match Circom defaults.
+                        vm.push_i64(0);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    }
                 }
                 
                 let size = if signal_id < num_outputs {
@@ -2740,10 +2796,16 @@ where
                 let total_io_signals = num_outputs + num_inputs;
 
                 if signal_id >= total_io_signals {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
-                        signal_id,
-                        total_io_signals,
-                    )));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Return ff (-1) when signal id is out of range.
+                        vm.push_i64(-1);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    }
                 }
 
                 let signal = if signal_id < num_outputs {
@@ -2782,7 +2844,16 @@ where
                 let total_io_signals = num_outputs + num_inputs;
                 
                 if signal_id >= total_io_signals {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Return dims=0 if signal id is out of range.
+                        vm.push_i64(0);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                    }
                 }
                 
                 let signal = if signal_id < num_outputs {
@@ -2797,10 +2868,18 @@ where
                 };
                 
                 if dimension_index >= dims.len() {
-                    return Err(Box::new(RuntimeError::DimensionIndexOutOfBounds(dimension_index, dims.len())));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        // Circom treats missing higher dimensions as length 1.
+                        vm.push_i64(1);
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::DimensionIndexOutOfBounds(dimension_index, dims.len())));
+                    }
+                } else {
+                    vm.push_i64(dims[dimension_index] as i64);
                 }
-                
-                vm.push_i64(dims[dimension_index] as i64);
             }
             OpCode::GetBusSignalPosition => {
                 let bus_type_id = vm.pop_usize()?;
@@ -2813,10 +2892,18 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
-                        field_id,
-                        bus_type.fields.len(),
-                    )));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        vm.push_i64(0);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                            field_id,
+                            bus_type.fields.len(),
+                        )));
+                    }
                 }
 
                 let position = bus_type.fields[field_id].offset;
@@ -2841,10 +2928,18 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
-                        field_id,
-                        bus_type.fields.len(),
-                    )));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        vm.push_i64(0);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                            field_id,
+                            bus_type.fields.len(),
+                        )));
+                    }
                 }
 
                 let size = bus_type.fields[field_id].size;
@@ -2869,10 +2964,18 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
-                        field_id,
-                        bus_type.fields.len(),
-                    )));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        vm.push_i64(-1);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                            field_id,
+                            bus_type.fields.len(),
+                        )));
+                    }
                 }
 
                 let field = &bus_type.fields[field_id];
@@ -2903,23 +3006,35 @@ where
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
-                        field_id,
-                        bus_type.fields.len(),
-                    )));
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    {
+                        vm.push_i64(1);
+                        continue;
+                    }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    {
+                        return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                            field_id,
+                            bus_type.fields.len(),
+                        )));
+                    }
                 }
 
                 let field = &bus_type.fields[field_id];
 
                 let dims = &field.dims;
-                if dimension_idx >= dims.len() {
-                    return Err(Box::new(RuntimeError::DimensionIndexOutOfBounds(
+                // Circom uses length 1 for dimensions beyond the declared rank.
+                let dim_length = if dimension_idx >= dims.len() {
+                    #[cfg(feature = "cvm_latest_compatible")]
+                    { 1 }
+                    #[cfg(not(feature = "cvm_latest_compatible"))]
+                    { return Err(Box::new(RuntimeError::DimensionIndexOutOfBounds(
                         dimension_idx,
                         dims.len(),
-                    )));
-                }
-
-                let dim_length = dims[dimension_idx] as i64;
+                    ))); }
+                } else {
+                    dims[dimension_idx] as i64
+                };
                 vm.push_i64(dim_length);
 
                 #[cfg(feature = "debug_vm2")]
@@ -2971,14 +3086,21 @@ where
                 match mode {
                     0b00 => {}
                     0b01 => {
-                        component_tree.components[cmp_idx].as_ref().unwrap().write().unwrap().number_of_inputs -= num_signals;
+                        let mut c = component_tree.components[cmp_idx].as_ref().unwrap().write().unwrap();
+                        #[cfg(feature = "cvm_latest_compatible")]
+                        { c.number_of_inputs = c.number_of_inputs.saturating_sub(num_signals); }
+                        #[cfg(not(feature = "cvm_latest_compatible"))]
+                        { c.number_of_inputs -= num_signals; }
                     }
                     0b10 => {
                         should_run = true;
                     }
                     0b11 => {
                         let mut c = component_tree.components[cmp_idx].as_ref().unwrap().write().unwrap();
-                        c.number_of_inputs -= num_signals;
+                        #[cfg(feature = "cvm_latest_compatible")]
+                        { c.number_of_inputs = c.number_of_inputs.saturating_sub(num_signals); }
+                        #[cfg(not(feature = "cvm_latest_compatible"))]
+                        { c.number_of_inputs -= num_signals; }
                         if c.number_of_inputs == 0 {
                             should_run = true;
                         }

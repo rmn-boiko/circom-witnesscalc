@@ -248,8 +248,14 @@ fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
     let mut total_size = 0;
 
     for field in &bus_type.fields {
-        // The size field already contains the total size for this field
-        total_size += field.size;
+        let dims_size = if field.dims.is_empty() {
+            1
+        } else {
+            field.dims.iter().product()
+        };
+        // In circom_cvm the stored size is per-element; include the array size
+        // to get the real contribution of the field to the bus footprint.
+        total_size += field.size * dims_size;
     }
 
     total_size

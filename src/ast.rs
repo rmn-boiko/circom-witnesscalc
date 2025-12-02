@@ -241,8 +241,14 @@ impl Template {
     fn calculate_bus_size(&self, bus_type: &Type) -> usize {
         let mut total_size = 0;
         for field in &bus_type.fields {
-            // The size field already contains the total size for this field
-            total_size += field.size;
+            let dims_size = if field.dims.is_empty() {
+                1
+            } else {
+                field.dims.iter().product()
+            };
+            // `size` in the cvm file is per element; multiply by the array
+            // length to recover the total contribution of the field.
+            total_size += field.size * dims_size;
         }
         total_size
     }
